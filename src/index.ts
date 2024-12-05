@@ -27,7 +27,10 @@ export default {
 				switch (command) {
 					case 'question':
 						const args = b.data.options[0].value;
-						const messages = [{ role: 'user', content: args }];
+						const messages = [
+							{ role: 'system', content: 'keep your response below 2000 characters.' },
+							{ role: 'user', content: args },
+						];
 						ctx.waitUntil(
 							wrapPromise(async () => {
 								fetch(`https://discord.com/api/v10/webhooks/${b.application_id}/${b.token}/messages/@original`, {
