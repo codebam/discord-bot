@@ -1,5 +1,15 @@
 import { verifyKey } from 'discord-interactions';
 
+function wrapPromise<T>(func: promiseFunc<T>, time = 1000) {
+	return new Promise((resolve, reject) => {
+		return setTimeout(() => {
+			func(resolve, reject).catch((e: unknown) => {
+				console.log(e);
+			});
+		}, time);
+	});
+}
+
 export default {
 	async fetch(request, env, ctx): Promise<Response> {
 		const signature = request.headers.get('X-Signature-Ed25519') as string;
@@ -18,15 +28,21 @@ export default {
 					case 'question':
 						const args = b.data.options[0].value;
 						const messages = [{ role: 'user', content: args }];
-						// @ts-expect-error broken bindings
-						const { response } = await env.AI.run('@cf/meta/llama-3.2-1b-instruct', { messages, max_tokens: 20 });
-						return new Response(
-							JSON.stringify({
-								type: 4,
-								data: { content: response },
-							}),
-							{ headers: { 'Content-Type': 'application/json' } },
+						ctx.waitUntil(
+							wrapPromise(async () => {
+								fetch(`https://discord.com/api/v10/webhooks/${b.application_id}/${b.token}/messages/@original`, {
+									method: 'PATCH',
+									body: JSON.stringify({
+										// @ts-expect-error broken bindings
+										content: (
+											(await env.AI.run('@cf/meta/llama-3.2-11b-vision-instruct', { messages })) as { response: string }
+										).response.slice(-2000),
+									}),
+									headers: { 'Content-Type': 'application/json' },
+								});
+							}, 500),
 						);
+						return new Response(JSON.stringify({ type: 5 }), { headers: { 'Content-Type': 'application/json' } });
 					case 'hello':
 						return new Response(
 							JSON.stringify({
