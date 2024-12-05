@@ -9,9 +9,19 @@ export default {
 			return new Response('Invalid request signature', { status: 401 });
 		}
 		const b = JSON.parse(body);
-		if (b.type === 1) {
-			return new Response(JSON.stringify({ type: 1 }), { headers: { 'Content-Type': 'application/json' } });
+		switch (b.type) {
+			case 1:
+				return new Response(JSON.stringify({ type: 1 }), { headers: { 'Content-Type': 'application/json' } });
+			case 2:
+				return new Response(
+					JSON.stringify({
+						type: 4,
+						data: { content: 'hello world' },
+					}),
+					{ headers: { 'Content-Type': 'application/json' } },
+				);
+			default:
+				return new Response('Unhandled interaction type', { status: 400 });
 		}
-		return new Response('Unhandled interaction type', { status: 400 });
 	},
 } satisfies ExportedHandler<Env>;
