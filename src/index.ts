@@ -13,13 +13,31 @@ export default {
 			case 1:
 				return new Response(JSON.stringify({ type: 1 }), { headers: { 'Content-Type': 'application/json' } });
 			case 2:
-				return new Response(
-					JSON.stringify({
-						type: 4,
-						data: { content: 'hello world' },
-					}),
-					{ headers: { 'Content-Type': 'application/json' } },
-				);
+				const command = b.data.name;
+				switch (command) {
+					case 'question':
+						const args = b.data.options[0].value;
+						const messages = [{ role: 'user', content: args }];
+						// @ts-expect-error broken bindings
+						const { response } = await env.AI.run('@cf/meta/llama-3.2-1b-instruct', { messages, max_tokens: 20 });
+						return new Response(
+							JSON.stringify({
+								type: 4,
+								data: { content: response },
+							}),
+							{ headers: { 'Content-Type': 'application/json' } },
+						);
+					case 'hello':
+						return new Response(
+							JSON.stringify({
+								type: 4,
+								data: { content: 'hello world' },
+							}),
+							{ headers: { 'Content-Type': 'application/json' } },
+						);
+					default:
+						break;
+				}
 			default:
 				return new Response('Unhandled interaction type', { status: 400 });
 		}
