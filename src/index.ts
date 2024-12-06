@@ -10,10 +10,10 @@ export class DiscordWorkflow extends WorkflowEntrypoint<Env, Params> {
 			{
 				retries: {
 					limit: 5,
-					delay: '3 second',
+					delay: 500,
 					backoff: 'exponential',
 				},
-				timeout: '15 minutes',
+				timeout: '10 minutes',
 			},
 			async () => {
 				const response = await fetch(
