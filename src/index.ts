@@ -35,16 +35,6 @@ export class DiscordWorkflow extends WorkflowEntrypoint<Env, Params> {
 	}
 }
 
-function wrapPromise<T>(func: promiseFunc<T>, time = 1000) {
-	return new Promise((resolve, reject) => {
-		return setTimeout(() => {
-			func(resolve, reject).catch((e: unknown) => {
-				console.log(e);
-			});
-		}, time);
-	});
-}
-
 export default {
 	async fetch(request, env, ctx): Promise<Response> {
 		const signature = request.headers.get('X-Signature-Ed25519') as string;
