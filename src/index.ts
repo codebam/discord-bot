@@ -21,13 +21,13 @@ export class DiscordWorkflow extends WorkflowEntrypoint<Env, Params> {
 					{
 						method: 'PATCH',
 						body: JSON.stringify({
-							content: event.payload.content,
+							content: event.payload.content.slice(-2000),
 						}),
 						headers: { 'Content-Type': 'application/json' },
 					},
 				);
-				if (response.status === 400) {
-					throw new Error(`status 400, content: "${event.payload.content}"`);
+				if (response.status !== 200) {
+					throw new Error(`${await response.text()}"`);
 				}
 				return { status: response.status, content: event.payload.content };
 			},
