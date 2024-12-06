@@ -2,4 +2,5 @@
 
 interface Env {
 	AI: Ai;
+	WORKFLOW: Workflow;
 }

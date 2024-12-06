@@ -112,3 +112,8 @@ binding = "AI"
 # [[vectorize]]
 # binding = "MY_INDEX"
 # index_name = "my-index"
+
+[[workflows]]
+name = "discord-workflow"
+binding = "WORKFLOW"
+class_name = "DiscordWorkflow"

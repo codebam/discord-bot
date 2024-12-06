@@ -1,4 +1,39 @@
+import { WorkflowEntrypoint, WorkflowEvent, WorkflowStep } from 'cloudflare:workers';
 import { verifyKey } from 'discord-interactions';
+
+type Params = { application_id: string; token: string; content: string };
+
+export class DiscordWorkflow extends WorkflowEntrypoint<Env, Params> {
+	async run(event: WorkflowEvent<Params>, step: WorkflowStep) {
+		await step.do(
+			'edit our discord message',
+			{
+				retries: {
+					limit: 5,
+					delay: '3 second',
+					backoff: 'exponential',
+				},
+				timeout: '15 minutes',
+			},
+			async () => {
+				const response = await fetch(
+					`https://discord.com/api/v10/webhooks/${event.payload.application_id}/${event.payload.token}/messages/@original`,
+					{
+						method: 'PATCH',
+						body: JSON.stringify({
+							content: event.payload.content,
+						}),
+						headers: { 'Content-Type': 'application/json' },
+					},
+				);
+				if (response.status === 400) {
+					throw new Error(`status 400, content: "${event.payload.content}"`);
+				}
+				return { status: response.status, content: event.payload.content };
+			},
+		);
+	}
+}
 
 function wrapPromise<T>(func: promiseFunc<T>, time = 1000) {
 	return new Promise((resolve, reject) => {
@@ -32,18 +67,17 @@ export default {
 							{ role: 'user', content: args },
 						];
 						ctx.waitUntil(
-							wrapPromise(async () => {
-								fetch(`https://discord.com/api/v10/webhooks/${b.application_id}/${b.token}/messages/@original`, {
-									method: 'PATCH',
-									body: JSON.stringify({
-										// @ts-expect-error broken bindings
-										content: (
-											(await env.AI.run('@cf/meta/llama-3.2-11b-vision-instruct', { messages })) as { response: string }
-										).response.slice(-2000),
-									}),
-									headers: { 'Content-Type': 'application/json' },
+							(async () => {
+								const response = (await env.AI.run('@cf/meta/llama-3.2-11b-vision-instruct', { messages })).response;
+								await env.WORKFLOW.create({
+									id: crypto.randomUUID(),
+									params: {
+										application_id: b.application_id,
+										token: b.token,
+										content: response,
+									},
 								});
-							}, 500),
+							})(),
 						);
 						return new Response(JSON.stringify({ type: 5 }), { headers: { 'Content-Type': 'application/json' } });
 					case 'hello':
