@@ -44,9 +44,12 @@ const AI_MODELS = {
 const DISCORD_API_BASE = 'https://discord.com/api/v10';
 const MAX_DISCORD_MESSAGE_LENGTH = 2000;
 
+/**
+ * Workflow for handling Discord message updates
+ */
 export class DiscordWorkflow extends WorkflowEntrypoint<Env, Params> {
 	async run(event: WorkflowEvent<Params>, step: WorkflowStep) {
-		await step.do(
+		const result = await step.do(
 			'edit discord message',
 			{
 				retries: {
@@ -79,66 +82,92 @@ export class DiscordWorkflow extends WorkflowEntrypoint<Env, Params> {
 				};
 			},
 		);
+
+		return result;
 	}
 }
 
-export default {
-	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-		// Only accept POST requests
-		if (request.method !== 'POST') {
-			return new Response('Method not allowed', { status: 405 });
-		}
-
-		// Verify the request is from Discord
-		const signature = request.headers.get('X-Signature-Ed25519');
-		const timestamp = request.headers.get('X-Signature-Timestamp');
-
-		if (!signature || !timestamp) {
-			return new Response('Missing signature headers', { status: 401 });
-		}
-
-		const body = await request.text();
-
-		try {
-			// Use environment variable for the public key
-			const isValidRequest = await verifyKey(body, signature, timestamp, env.DISCORD_PUBLIC_KEY);
-
-			if (!isValidRequest) {
-				return new Response('Invalid request signature', { status: 401 });
-			}
-
-			const interaction = JSON.parse(body) as DiscordInteraction;
-
-			switch (interaction.type) {
-				case INTERACTION_TYPES.PING:
-					return jsonResponse({ type: RESPONSE_TYPES.PONG });
-
-				case INTERACTION_TYPES.APPLICATION_COMMAND:
-					return await handleCommand(interaction, env, ctx);
-
-				default:
-					return new Response(`Unsupported interaction type: ${interaction.type}`, { status: 400 });
-			}
-		} catch (error) {
-			console.error('Error processing request:', error);
-			return new Response(`Internal server error: ${error instanceof Error ? error.message : String(error)}`, { status: 500 });
-		}
-	},
-} satisfies ExportedHandler<Env>;
-
-// Helper function for JSON responses
+/**
+ * Helper function for JSON responses
+ */
 function jsonResponse(data: unknown): Response {
 	return new Response(JSON.stringify(data), {
 		headers: { 'Content-Type': 'application/json' },
 	});
 }
 
-// Handle different commands
+/**
+ * Handle the question command
+ */
+async function handleQuestionCommand(interaction: DiscordInteraction, env: Env, ctx: ExecutionContext): Promise<Response> {
+	const userQuestion = interaction.data?.options?.[0]?.value;
+
+	if (!userQuestion) {
+		return jsonResponse({
+			type: RESPONSE_TYPES.CHANNEL_MESSAGE,
+			data: { content: 'Please provide a question!' },
+		});
+	}
+
+	// Process AI response in the background
+	ctx.waitUntil(processAIResponse(interaction, userQuestion, env));
+
+	// Immediately respond with "thinking" state
+	return jsonResponse({ type: RESPONSE_TYPES.DEFERRED_CHANNEL_MESSAGE });
+}
+
+/**
+ * Process AI response in the background
+ */
+async function processAIResponse(interaction: DiscordInteraction, userQuestion: string, env: Env): Promise<void> {
+	try {
+		const messages = [
+			{ role: 'system', content: `You are a helpful assistant. Keep your response below ${MAX_DISCORD_MESSAGE_LENGTH} characters.` },
+			{ role: 'user', content: userQuestion },
+		];
+
+		// Type assertion to handle the AI model
+		const result = await env.AI.run(AI_MODELS.LLAMA as keyof AiModels, { messages });
+
+		if (!result || typeof result !== 'object' || !('response' in result)) {
+			throw new Error('Invalid AI response format');
+		}
+
+		// Create workflow to update the message
+		await env.WORKFLOW.create({
+			id: crypto.randomUUID(),
+			params: {
+				application_id: interaction.application_id,
+				token: interaction.token,
+				content: result.response || "Sorry, I couldn't generate a response.",
+			},
+		});
+	} catch (error) {
+		console.error('Error processing AI response:', error);
+
+		// Handle errors by updating the message with an error notice
+		await env.WORKFLOW.create({
+			id: crypto.randomUUID(),
+			params: {
+				application_id: interaction.application_id,
+				token: interaction.token,
+				content: 'Sorry, I encountered an error while processing your question.',
+			},
+		});
+	}
+}
+
+/**
+ * Handle different commands
+ */
 async function handleCommand(interaction: DiscordInteraction, env: Env, ctx: ExecutionContext): Promise<Response> {
 	const command = interaction.data?.name;
 
 	if (!command) {
-		return new Response('Missing command data', { status: 400 });
+		return jsonResponse({
+			type: RESPONSE_TYPES.CHANNEL_MESSAGE,
+			data: { content: 'Missing command data' },
+		});
 	}
 
 	try {
@@ -151,7 +180,6 @@ async function handleCommand(interaction: DiscordInteraction, env: Env, ctx: Exe
 					type: RESPONSE_TYPES.CHANNEL_MESSAGE,
 					data: {
 						content: `Hello ${interaction.user?.username || 'there'}! 👋`,
-						// Add embeds for a richer response
 						embeds: [
 							{
 								title: 'Discord Bot',
@@ -177,55 +205,46 @@ async function handleCommand(interaction: DiscordInteraction, env: Env, ctx: Exe
 	}
 }
 
-// Handle the question command
-async function handleQuestionCommand(interaction: DiscordInteraction, env: Env, ctx: ExecutionContext): Promise<Response> {
-	const userQuestion = interaction.data?.options?.[0]?.value;
+export default {
+	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+		// Only accept POST requests
+		if (request.method !== 'POST') {
+			return new Response('Method not allowed', { status: 405 });
+		}
 
-	if (!userQuestion) {
-		return jsonResponse({
-			type: RESPONSE_TYPES.CHANNEL_MESSAGE,
-			data: { content: 'Please provide a question!' },
-		});
-	}
+		// Verify the request is from Discord
+		const signature = request.headers.get('X-Signature-Ed25519');
+		const timestamp = request.headers.get('X-Signature-Timestamp');
 
-	// Process AI response in the background
-	ctx.waitUntil(processAIResponse(interaction, userQuestion, env));
+		if (!signature || !timestamp) {
+			return new Response('Missing signature headers', { status: 401 });
+		}
 
-	// Immediately respond with "thinking" state
-	return jsonResponse({ type: RESPONSE_TYPES.DEFERRED_CHANNEL_MESSAGE });
-}
+		const body = await request.text();
 
-// Separate function to process AI response for better organization
-async function processAIResponse(interaction: DiscordInteraction, userQuestion: string, env: Env): Promise<void> {
-	try {
-		const messages = [
-			{ role: 'system', content: `You are a helpful assistant. Keep your response below ${MAX_DISCORD_MESSAGE_LENGTH} characters.` },
-			{ role: 'user', content: userQuestion },
-		];
+		try {
+			// Verify the request signature
+			const isValidRequest = await verifyKey(body, signature, timestamp, env.DISCORD_PUBLIC_KEY);
 
-		const result = await env.AI.run(AI_MODELS.LLAMA as keyof AiModels, { messages });
-		const response = 'response' in result ? String(result.response) : "Sorry, I couldn't process your question.";
+			if (!isValidRequest) {
+				return new Response('Invalid request signature', { status: 401 });
+			}
 
-		// Create workflow to update the message
-		await env.WORKFLOW.create({
-			id: crypto.randomUUID(),
-			params: {
-				application_id: interaction.application_id,
-				token: interaction.token,
-				content: response,
-			},
-		});
-	} catch (error) {
-		console.error('Error processing AI response:', error);
+			const interaction = JSON.parse(body) as DiscordInteraction;
 
-		// Update with error message if AI fails
-		await env.WORKFLOW.create({
-			id: crypto.randomUUID(),
-			params: {
-				application_id: interaction.application_id,
-				token: interaction.token,
-				content: `Sorry, I encountered an error processing your question: ${error instanceof Error ? error.message : String(error)}`,
-			},
-		});
-	}
-}
+			switch (interaction.type) {
+				case INTERACTION_TYPES.PING:
+					return jsonResponse({ type: RESPONSE_TYPES.PONG });
+
+				case INTERACTION_TYPES.APPLICATION_COMMAND:
+					return await handleCommand(interaction, env, ctx);
+
+				default:
+					return new Response(`Unsupported interaction type: ${interaction.type}`, { status: 400 });
+			}
+		} catch (error) {
+			console.error('Error processing request:', error);
+			return new Response(`Internal server error: ${error instanceof Error ? error.message : String(error)}`, { status: 500 });
+		}
+	},
+} satisfies ExportedHandler<Env>;
