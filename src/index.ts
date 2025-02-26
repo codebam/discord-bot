@@ -15,7 +15,11 @@ type DiscordInteraction = {
 	token: string;
 	data?: {
 		name: string;
-		options?: Array<{ name?: string; value: string }>;
+		options?: Array<{ name: string; value: string }>;
+	};
+	user?: {
+		id: string;
+		username: string;
 	};
 };
 
@@ -36,6 +40,10 @@ const AI_MODELS = {
 	LLAMA: '@cf/meta/llama-3.2-11b-vision-instruct',
 };
 
+// Discord API constants
+const DISCORD_API_BASE = 'https://discord.com/api/v10';
+const MAX_DISCORD_MESSAGE_LENGTH = 2000;
+
 export class DiscordWorkflow extends WorkflowEntrypoint<Env, Params> {
 	async run(event: WorkflowEvent<Params>, step: WorkflowStep) {
 		await step.do(
@@ -50,13 +58,13 @@ export class DiscordWorkflow extends WorkflowEntrypoint<Env, Params> {
 			},
 			async () => {
 				const { application_id, token, content } = event.payload;
-				const url = `https://discord.com/api/v10/webhooks/${application_id}/${token}/messages/@original`;
+				const url = `${DISCORD_API_BASE}/webhooks/${application_id}/${token}/messages/@original`;
 
 				const response = await fetch(url, {
 					method: 'PATCH',
 					headers: { 'Content-Type': 'application/json' },
 					body: JSON.stringify({
-						content: content.slice(0, 2000), // Discord has a 2000 character limit
+						content: content.slice(0, MAX_DISCORD_MESSAGE_LENGTH),
 					}),
 				});
 
@@ -91,14 +99,14 @@ export default {
 
 		const body = await request.text();
 
-		// Use environment variable for the public key
-		const isValidRequest = await verifyKey(body, signature, timestamp, env.DISCORD_PUBLIC_KEY);
-
-		if (!isValidRequest) {
-			return new Response('Invalid request signature', { status: 401 });
-		}
-
 		try {
+			// Use environment variable for the public key
+			const isValidRequest = await verifyKey(body, signature, timestamp, env.DISCORD_PUBLIC_KEY);
+
+			if (!isValidRequest) {
+				return new Response('Invalid request signature', { status: 401 });
+			}
+
 			const interaction = JSON.parse(body) as DiscordInteraction;
 
 			switch (interaction.type) {
@@ -133,21 +141,39 @@ async function handleCommand(interaction: DiscordInteraction, env: Env, ctx: Exe
 		return new Response('Missing command data', { status: 400 });
 	}
 
-	switch (command) {
-		case 'question':
-			return handleQuestionCommand(interaction, env, ctx);
+	try {
+		switch (command) {
+			case 'question':
+				return handleQuestionCommand(interaction, env, ctx);
 
-		case 'hello':
-			return jsonResponse({
-				type: RESPONSE_TYPES.CHANNEL_MESSAGE,
-				data: { content: 'Hello world! 👋' },
-			});
+			case 'hello':
+				return jsonResponse({
+					type: RESPONSE_TYPES.CHANNEL_MESSAGE,
+					data: {
+						content: `Hello ${interaction.user?.username || 'there'}! 👋`,
+						// Add embeds for a richer response
+						embeds: [
+							{
+								title: 'Discord Bot',
+								description: 'I am your friendly AI-powered Discord bot!',
+								color: 0x00ffff, // Cyan color
+							},
+						],
+					},
+				});
 
-		default:
-			return jsonResponse({
-				type: RESPONSE_TYPES.CHANNEL_MESSAGE,
-				data: { content: `Unknown command: ${command}` },
-			});
+			default:
+				return jsonResponse({
+					type: RESPONSE_TYPES.CHANNEL_MESSAGE,
+					data: { content: `Unknown command: ${command}` },
+				});
+		}
+	} catch (error) {
+		console.error(`Error handling command ${command}:`, error);
+		return jsonResponse({
+			type: RESPONSE_TYPES.CHANNEL_MESSAGE,
+			data: { content: 'An error occurred while processing your command.' },
+		});
 	}
 }
 
@@ -163,42 +189,43 @@ async function handleQuestionCommand(interaction: DiscordInteraction, env: Env, 
 	}
 
 	// Process AI response in the background
-	ctx.waitUntil(
-		(async () => {
-			try {
-				const messages = [
-					{ role: 'system', content: 'You are a helpful assistant. Keep your response below 2000 characters.' },
-					{ role: 'user', content: userQuestion },
-				];
-
-				const result = await env.AI.run(AI_MODELS.LLAMA as keyof AiModels, { messages });
-				const response = 'response' in result ? String(result.response) : "Sorry, I couldn't process your question.";
-
-				// Create workflow to update the message
-				await env.WORKFLOW.create({
-					id: crypto.randomUUID(),
-					params: {
-						application_id: interaction.application_id,
-						token: interaction.token,
-						content: response,
-					},
-				});
-			} catch (error) {
-				console.error('Error processing AI response:', error);
-
-				// Update with error message if AI fails
-				await env.WORKFLOW.create({
-					id: crypto.randomUUID(),
-					params: {
-						application_id: interaction.application_id,
-						token: interaction.token,
-						content: `Sorry, I encountered an error processing your question: ${error instanceof Error ? error.message : String(error)}`,
-					},
-				});
-			}
-		})(),
-	);
+	ctx.waitUntil(processAIResponse(interaction, userQuestion, env));
 
 	// Immediately respond with "thinking" state
 	return jsonResponse({ type: RESPONSE_TYPES.DEFERRED_CHANNEL_MESSAGE });
+}
+
+// Separate function to process AI response for better organization
+async function processAIResponse(interaction: DiscordInteraction, userQuestion: string, env: Env): Promise<void> {
+	try {
+		const messages = [
+			{ role: 'system', content: `You are a helpful assistant. Keep your response below ${MAX_DISCORD_MESSAGE_LENGTH} characters.` },
+			{ role: 'user', content: userQuestion },
+		];
+
+		const result = await env.AI.run(AI_MODELS.LLAMA as keyof AiModels, { messages });
+		const response = 'response' in result ? String(result.response) : "Sorry, I couldn't process your question.";
+
+		// Create workflow to update the message
+		await env.WORKFLOW.create({
+			id: crypto.randomUUID(),
+			params: {
+				application_id: interaction.application_id,
+				token: interaction.token,
+				content: response,
+			},
+		});
+	} catch (error) {
+		console.error('Error processing AI response:', error);
+
+		// Update with error message if AI fails
+		await env.WORKFLOW.create({
+			id: crypto.randomUUID(),
+			params: {
+				application_id: interaction.application_id,
+				token: interaction.token,
+				content: `Sorry, I encountered an error processing your question: ${error instanceof Error ? error.message : String(error)}`,
+			},
+		});
+	}
 }
