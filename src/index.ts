@@ -171,7 +171,7 @@ async function handleQuestionCommand(interaction: DiscordInteraction, env: Env, 
 					{ role: 'user', content: userQuestion },
 				];
 
-				const result = await env.AI.run(AI_MODELS.LLAMA, { messages });
+				const result = await env.AI.run(AI_MODELS.LLAMA as keyof AiModels, { messages });
 				const response = 'response' in result ? String(result.response) : "Sorry, I couldn't process your question.";
 
 				// Create workflow to update the message
