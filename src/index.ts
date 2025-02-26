@@ -58,7 +58,11 @@ export default {
 						];
 						ctx.waitUntil(
 							(async () => {
-								const response = (await env.AI.run('@cf/meta/llama-3.2-11b-vision-instruct', { messages })).response;
+								let response = '';
+								const result = await env.AI.run('@cf/meta/llama-3.2-11b-vision-instruct', { messages });
+								if ('response' in result) {
+									response = String(result.response);
+								}
 								await env.WORKFLOW.create({
 									id: crypto.randomUUID(),
 									params: {
