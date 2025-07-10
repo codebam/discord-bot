@@ -37,7 +37,7 @@ const RESPONSE_TYPES = {
 
 // AI model constants
 const AI_MODELS = {
-	LLAMA: '@cf/mistralai/mistral-small-3.1-24b-instruct',
+	LLAMA: '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
 };
 
 // Discord API constants
