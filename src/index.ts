@@ -38,6 +38,7 @@ const RESPONSE_TYPES = {
 // AI model constants
 const AI_MODELS = {
 	LLAMA: '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
+	GEMMA: '@cf/google/gemma-4-26b-a4b-it',
 };
 
 // Discord API constants
@@ -47,7 +48,7 @@ const MAX_DISCORD_MESSAGE_LENGTH = 2000;
 /**
  * Workflow for handling Discord message updates
  */
-export class DiscordWorkflow extends WorkflowEntrypoint<Env, Params> {
+ export class DiscordWorkflow extends WorkflowEntrypoint<Env, Params> {
 	async run(event: WorkflowEvent<Params>, step: WorkflowStep) {
 		const result = await step.do(
 			'edit discord message',
@@ -60,14 +61,30 @@ export class DiscordWorkflow extends WorkflowEntrypoint<Env, Params> {
 				timeout: '10 minutes',
 			},
 			async () => {
-				const { application_id, token, content } = event.payload;
+				const { application_id, token, content: rawContent } = event.payload;
 				const url = `${DISCORD_API_BASE}/webhooks/${application_id}/${token}/messages/@original`;
+
+				// 1. Extract the actual text from the potentially nested AI response structure
+				let finalMessage = '';
+
+				if (typeof rawContent === 'string') {
+					finalMessage = rawContent;
+				} else if (rawContent && typeof rawContent === 'object') {
+					// Check for OpenAI-style 'choices' or legacy 'response' keys
+					// In non-streaming, it's usually choices[0].message.content instead of .delta
+					const aiChoice = (rawContent as any).choices?.[0];
+					finalMessage = aiChoice?.message?.content || aiChoice?.text || (rawContent as any).response || '';
+				}
+
+				if (!finalMessage) {
+					throw new Error("No content found in the AI payload to send to Discord.");
+				}
 
 				const response = await fetch(url, {
 					method: 'PATCH',
 					headers: { 'Content-Type': 'application/json' },
 					body: JSON.stringify({
-						content: content.slice(0, MAX_DISCORD_MESSAGE_LENGTH),
+						content: finalMessage.slice(0, MAX_DISCORD_MESSAGE_LENGTH),
 					}),
 				});
 
@@ -78,7 +95,7 @@ export class DiscordWorkflow extends WorkflowEntrypoint<Env, Params> {
 
 				return {
 					status: response.status,
-					content: event.payload.content,
+					content: finalMessage,
 				};
 			},
 		);
@@ -119,6 +136,9 @@ async function handleQuestionCommand(interaction: DiscordInteraction, env: Env, 
 /**
  * Process AI response in the background
  */
+/**
+ * Process AI response in the background
+ */
 async function processAIResponse(interaction: DiscordInteraction, userQuestion: string, env: Env): Promise<void> {
 	try {
 		const messages = [
@@ -126,10 +146,20 @@ async function processAIResponse(interaction: DiscordInteraction, userQuestion: 
 			{ role: 'user', content: userQuestion },
 		];
 
-		// Type assertion to handle the AI model
-		const result = await env.AI.run(AI_MODELS.LLAMA as keyof AiModels, { messages });
+		// The AI call
+		const result = await env.AI.run(AI_MODELS.GEMMA as keyof AiModels, { messages });
 
-		if (!result || typeof result !== 'object' || !('response' in result)) {
+		// 1. EXTRACT CONTENT SAFELY
+		// We check for result.choices[0].message.content (OpenAI format)
+		// and fallback to result.response (Legacy format)
+		let aiText = '';
+		if (result && typeof result === 'object') {
+			aiText = (result as any).choices?.[0]?.message?.content || (result as any).response || '';
+		}
+
+		// 2. VALIDATE THE CONTENT
+		if (!aiText) {
+			console.error('Invalid AI response structure:', JSON.stringify(result));
 			throw new Error('Invalid AI response format');
 		}
 
@@ -139,7 +169,7 @@ async function processAIResponse(interaction: DiscordInteraction, userQuestion: 
 			params: {
 				application_id: interaction.application_id,
 				token: interaction.token,
-				content: result.response || "Sorry, I couldn't generate a response.",
+				content: aiText,
 			},
 		});
 	} catch (error) {
