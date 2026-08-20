@@ -38,7 +38,7 @@ const RESPONSE_TYPES = {
 // AI model constants
 const AI_MODELS = {
 	LLAMA: '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
-	GEMMA: '@cf/google/gemma-4-26b-a4b-it',
+	QWEN: '@cf/qwen/qwen3.8-27b',
 };
 
 // Discord API constants
@@ -147,7 +147,7 @@ async function processAIResponse(interaction: DiscordInteraction, userQuestion: 
 		];
 
 		// The AI call
-		const result = await env.AI.run(AI_MODELS.GEMMA as keyof AiModels, { messages });
+		const result = await env.AI.run(AI_MODELS.QWEN as keyof AiModels, { messages });
 
 		// 1. EXTRACT CONTENT SAFELY
 		// We check for result.choices[0].message.content (OpenAI format)
