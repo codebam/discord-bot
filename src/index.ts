@@ -114,9 +114,9 @@ function jsonResponse(data: unknown): Response {
 }
 
 /**
- * Handle the question command
+ * Handle the llm command
  */
-async function handleQuestionCommand(interaction: DiscordInteraction, env: Env, ctx: ExecutionContext): Promise<Response> {
+async function handleLlmCommand(interaction: DiscordInteraction, env: Env, ctx: ExecutionContext): Promise<Response> {
 	const userQuestion = interaction.data?.options?.[0]?.value;
 
 	if (!userQuestion) {
@@ -202,23 +202,8 @@ async function handleCommand(interaction: DiscordInteraction, env: Env, ctx: Exe
 
 	try {
 		switch (command) {
-			case 'question':
-				return handleQuestionCommand(interaction, env, ctx);
-
-			case 'hello':
-				return jsonResponse({
-					type: RESPONSE_TYPES.CHANNEL_MESSAGE,
-					data: {
-						content: `Hello ${interaction.user?.username || 'there'}! 👋`,
-						embeds: [
-							{
-								title: 'Discord Bot',
-								description: 'I am your friendly AI-powered Discord bot!',
-								color: 0x00ffff, // Cyan color
-							},
-						],
-					},
-				});
+			case 'llm':
+				return handleLlmCommand(interaction, env, ctx);
 
 			default:
 				return jsonResponse({
