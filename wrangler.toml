@@ -32,8 +32,11 @@ binding = "AI"
 
 # Plaintext config values. AI_MODEL overrides the default model used by the /llm command,
 # allowing you to switch models without a code change (see src/index.ts).
+# RATE_LIMIT_MAX / RATE_LIMIT_WINDOW_MS tune the per-user /llm rate limiter.
 [vars]
 AI_MODEL = "@cf/qwen/qwen3.8-27b"
+RATE_LIMIT_MAX = "10"
+RATE_LIMIT_WINDOW_MS = "600000"
 
 # Bind an Analytics Engine dataset. Use Analytics Engine to write analytics within your Pages Function.
 # Docs: https://developers.cloudflare.com/workers/wrangler/configuration/#analytics-engine-datasets
@@ -77,11 +80,10 @@ AI_MODEL = "@cf/qwen/qwen3.8-27b"
 # binding = "MY_HYPERDRIVE"
 # id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
-# Bind a KV Namespace. Use KV as persistent storage for small key-value pairs.
-# Docs: https://developers.cloudflare.com/workers/wrangler/configuration/#kv-namespaces
-# [[kv_namespaces]]
-# binding = "MY_KV_NAMESPACE"
-# id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+# Bound for per-user rate limiting of the /llm command (see src/index.ts).
+[[kv_namespaces]]
+binding = "RATE_LIMITS"
+id = "5818aec18fe64deba702f52b9fe8f66d"
 
 # Bind an mTLS certificate. Use to present a client certificate when communicating with another service.
 # Docs: https://developers.cloudflare.com/workers/wrangler/configuration/#mtls-certificates

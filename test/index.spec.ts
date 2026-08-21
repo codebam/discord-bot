@@ -16,19 +16,39 @@ function toHex(bytes: Uint8Array): string {
  */
 type CreateArgs = { id: string; params: { application_id: string; token: string; content: string } };
 
-async function buildEnv(overrides: { aiRun?: () => Promise<unknown>; aiModel?: string } = {}) {
+type BuildEnvOptions = {
+	aiRun?: () => Promise<unknown>;
+	aiModel?: string;
+	rateLimit?: { max: number; windowMs: number };
+};
+
+async function buildEnv(overrides: BuildEnvOptions = {}) {
 	const keypair = (await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['verify', 'sign'])) as CryptoKeyPair;
 	const rawPublic = new Uint8Array((await crypto.subtle.exportKey('raw', keypair.publicKey)) as ArrayBuffer);
 
 	const create = vi.fn(async (_opts: CreateArgs) => ({}));
+
+	// Minimal in-memory KV stand-in for the RATE_LIMITS binding.
+	const kvStore = new Map<string, string>();
+	const RATE_LIMITS = {
+		get: vi.fn(async (key: string) => kvStore.get(key) ?? null),
+		put: vi.fn(async (key: string, value: string) => {
+			kvStore.set(key, value);
+		}),
+	};
+
 	const env = {
 		DISCORD_PUBLIC_KEY: toHex(rawPublic),
 		AI: { run: vi.fn(overrides.aiRun ?? (async () => ({ result: 'Hello from AI!' }))) },
 		WORKFLOW: { create },
+		RATE_LIMITS,
 		...(overrides.aiModel ? { AI_MODEL: overrides.aiModel } : {}),
+		...(overrides.rateLimit
+			? { RATE_LIMIT_MAX: String(overrides.rateLimit.max), RATE_LIMIT_WINDOW_MS: String(overrides.rateLimit.windowMs) }
+			: {}),
 	};
 
-	return { env, privateKey: keypair.privateKey };
+	return { env, privateKey: keypair.privateKey, kvStore };
 }
 
 /**
@@ -186,5 +206,36 @@ describe('discord-bot worker', () => {
 				params: expect.objectContaining({ content: 'Sorry, I encountered an error while processing your question.' }),
 			}),
 		);
+	});
+
+	it('enforces the per-user /llm rate limit stored in KV', async () => {
+		const { env, privateKey } = await buildEnv({ rateLimit: { max: 2, windowMs: 60_000 } });
+		const body = JSON.stringify({
+			type: 2,
+			application_id: '123',
+			token: 'token',
+			user: { id: '42', username: 'abuser' },
+			data: { name: 'llm', options: [{ name: 'question', value: 'hi' }] },
+		});
+
+		const send = async (): Promise<Response> => {
+			const request = await signedRequest(privateKey, body, now());
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env as never, ctx);
+			await waitOnExecutionContext(ctx);
+			return response;
+		};
+
+		expect(await (await send()).json()).toEqual({ type: 5 }); // 1st allowed
+		expect(await (await send()).json()).toEqual({ type: 5 }); // 2nd allowed
+
+		const rejected = await send(); // 3rd rejected
+		expect(rejected.status).toBe(200);
+		expect(await rejected.json()).toEqual({
+			type: 4,
+			data: { content: "You're sending commands too fast. Please wait a few minutes before trying again." },
+		});
+
+		expect(env.AI.run).toHaveBeenCalledTimes(2);
 	});
 });

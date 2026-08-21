@@ -7,6 +7,12 @@ interface Env {
 	WORKFLOW: Workflow;
 	/** Optional override for the Workers AI model id. Falls back to DEFAULT_AI_MODEL. */
 	AI_MODEL?: string;
+	/** KV namespace backing the per-user rate limiter for the /llm command. */
+	RATE_LIMITS?: KVNamespace;
+	/** Max /llm requests allowed per user within the window (see RATE_LIMIT_WINDOW_MS). */
+	RATE_LIMIT_MAX?: string;
+	/** Rate-limit window length in milliseconds. */
+	RATE_LIMIT_WINDOW_MS?: string;
 }
 
 // Define types for better code organization
@@ -39,6 +45,10 @@ const RESPONSE_TYPES = {
 
 // Default AI model; override at runtime via the AI_MODEL env var (see wrangler.toml).
 const DEFAULT_AI_MODEL = '@cf/qwen/qwen3.8-27b';
+
+// Default rate limits for the /llm command, overridable via env vars.
+const DEFAULT_RATE_LIMIT_MAX = 10;
+const DEFAULT_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 
 // Allow this much drift (seconds) between Discord's timestamp header and our clock
 // before treating the request as a replay.
@@ -127,6 +137,48 @@ function extractAiText(raw: unknown): string {
 }
 
 /**
+ * Per-user fixed-window rate limiter backed by KV.
+ *
+ * Returns `true` when the user has already used their allowance for the current
+ * window. This is a *soft* limiter (read-then-write) so a burst of truly
+ * simultaneous requests can exceed the cap by one increment; it exists to stop
+ * sustained abuse from incurring unbounded AI inference cost, not to be exact.
+ *
+ * Does nothing (returns `false`) when the RATE_LIMITS binding is absent.
+ */
+async function isRateLimited(userId: string, env: Env): Promise<boolean> {
+	const kv = env.RATE_LIMITS;
+	if (!kv) {
+		return false;
+	}
+
+	const max = Number(env.RATE_LIMIT_MAX) || DEFAULT_RATE_LIMIT_MAX;
+	const windowMs = Number(env.RATE_LIMIT_WINDOW_MS) || DEFAULT_RATE_LIMIT_WINDOW_MS;
+
+	const key = `rl:${userId}`;
+	const now = Date.now();
+	type Entry = { windowStart: number; count: number };
+	const raw = await kv.get(key);
+	const entry = raw ? (JSON.parse(raw) as Entry) : undefined;
+
+	const ttlSeconds = Math.ceil(windowMs / 1000) + 60;
+
+	if (!entry || now - entry.windowStart >= windowMs) {
+		await kv.put(key, JSON.stringify({ windowStart: now, count: 1 } satisfies Entry), { expirationTtl: ttlSeconds });
+		return false;
+	}
+
+	if (entry.count >= max) {
+		return true;
+	}
+
+	await kv.put(key, JSON.stringify({ windowStart: entry.windowStart, count: entry.count + 1 } satisfies Entry), {
+		expirationTtl: ttlSeconds,
+	});
+	return false;
+}
+
+/**
  * Helper function for JSON responses
  */
 function jsonResponse(data: unknown): Response {
@@ -145,6 +197,14 @@ async function handleLlmCommand(interaction: DiscordInteraction, env: Env, ctx: 
 		return jsonResponse({
 			type: RESPONSE_TYPES.CHANNEL_MESSAGE,
 			data: { content: 'Please provide a question!' },
+		});
+	}
+
+	const userId = interaction.user?.id;
+	if (userId && (await isRateLimited(userId, env))) {
+		return jsonResponse({
+			type: RESPONSE_TYPES.CHANNEL_MESSAGE,
+			data: { content: "You're sending commands too fast. Please wait a few minutes before trying again." },
 		});
 	}
 
