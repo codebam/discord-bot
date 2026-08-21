@@ -5,6 +5,8 @@ interface Env {
 	DISCORD_PUBLIC_KEY: string;
 	AI: Ai;
 	WORKFLOW: Workflow;
+	/** Optional override for the Workers AI model id. Falls back to DEFAULT_AI_MODEL. */
+	AI_MODEL?: string;
 }
 
 // Define types for better code organization
@@ -35,11 +37,12 @@ const RESPONSE_TYPES = {
 	CHANNEL_MESSAGE: 4,
 } as const;
 
-// AI model constants
-const AI_MODELS = {
-	LLAMA: '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
-	QWEN: '@cf/qwen/qwen3.8-27b',
-};
+// Default AI model; override at runtime via the AI_MODEL env var (see wrangler.toml).
+const DEFAULT_AI_MODEL = '@cf/qwen/qwen3.8-27b';
+
+// Allow this much drift (seconds) between Discord's timestamp header and our clock
+// before treating the request as a replay.
+const SIGNATURE_TIMESTAMP_TOLERANCE_SECONDS = 60;
 
 // Discord API constants
 const DISCORD_API_BASE = 'https://discord.com/api/v10';
@@ -48,7 +51,7 @@ const MAX_DISCORD_MESSAGE_LENGTH = 2000;
 /**
  * Workflow for handling Discord message updates
  */
- export class DiscordWorkflow extends WorkflowEntrypoint<Env, Params> {
+export class DiscordWorkflow extends WorkflowEntrypoint<Env, Params> {
 	async run(event: WorkflowEvent<Params>, step: WorkflowStep) {
 		const result = await step.do(
 			'edit discord message',
@@ -64,20 +67,10 @@ const MAX_DISCORD_MESSAGE_LENGTH = 2000;
 				const { application_id, token, content: rawContent } = event.payload;
 				const url = `${DISCORD_API_BASE}/webhooks/${application_id}/${token}/messages/@original`;
 
-				// 1. Extract the actual text from the potentially nested AI response structure
-				let finalMessage = '';
-
-				if (typeof rawContent === 'string') {
-					finalMessage = rawContent;
-				} else if (rawContent && typeof rawContent === 'object') {
-					// Check for OpenAI-style 'choices' or legacy 'response' keys
-					// In non-streaming, it's usually choices[0].message.content instead of .delta
-					const aiChoice = (rawContent as any).choices?.[0];
-					finalMessage = aiChoice?.message?.content || aiChoice?.text || (rawContent as any).response || '';
-				}
+				const finalMessage = extractAiText(rawContent);
 
 				if (!finalMessage) {
-					throw new Error("No content found in the AI payload to send to Discord.");
+					throw new Error('No content found in the AI payload to send to Discord.');
 				}
 
 				const response = await fetch(url, {
@@ -102,6 +95,35 @@ const MAX_DISCORD_MESSAGE_LENGTH = 2000;
 
 		return result;
 	}
+}
+
+/**
+ * Normalize the various Workers AI response shapes into a single string.
+ *
+ * Covers the OpenAI-style `choices[...]` format as well as the legacy `result`,
+ * `completion`, and `response` payloads, so callers don't repeat this logic.
+ */
+function extractAiText(raw: unknown): string {
+	if (typeof raw === 'string') {
+		return raw;
+	}
+
+	if (!raw || typeof raw !== 'object') {
+		return '';
+	}
+
+	const payload = raw as Record<string, unknown>;
+	const choice = Array.isArray(payload.choices) ? (payload.choices[0] as Record<string, unknown>) : undefined;
+	const message = (choice?.message as Record<string, unknown> | undefined) ?? undefined;
+
+	return (
+		(message?.content as string) ??
+		(choice?.text as string) ??
+		(payload.result as string) ??
+		(payload.completion as string) ??
+		(payload.response as string) ??
+		''
+	);
 }
 
 /**
@@ -136,9 +158,6 @@ async function handleLlmCommand(interaction: DiscordInteraction, env: Env, ctx: 
 /**
  * Process AI response in the background
  */
-/**
- * Process AI response in the background
- */
 async function processAIResponse(interaction: DiscordInteraction, userQuestion: string, env: Env): Promise<void> {
 	try {
 		const messages = [
@@ -146,18 +165,13 @@ async function processAIResponse(interaction: DiscordInteraction, userQuestion: 
 			{ role: 'user', content: userQuestion },
 		];
 
+		const model = (env.AI_MODEL || DEFAULT_AI_MODEL) as keyof AiModels;
+
 		// The AI call
-		const result = await env.AI.run(AI_MODELS.QWEN as keyof AiModels, { messages });
+		const result = await env.AI.run(model, { messages });
 
-		// 1. EXTRACT CONTENT SAFELY
-		// We check for result.choices[0].message.content (OpenAI format)
-		// and fallback to result.response (Legacy format)
-		let aiText = '';
-		if (result && typeof result === 'object') {
-			aiText = (result as any).choices?.[0]?.message?.content || (result as any).response || '';
-		}
+		const aiText = extractAiText(result);
 
-		// 2. VALIDATE THE CONTENT
 		if (!aiText) {
 			console.error('Invalid AI response structure:', JSON.stringify(result));
 			throw new Error('Invalid AI response format');
@@ -235,6 +249,14 @@ export default {
 			return new Response('Missing signature headers', { status: 401 });
 		}
 
+		// Reject stale requests to mitigate replay attacks. `verifyKey` signs
+		// `timestamp + body` but never checks the timestamp's age itself.
+		const requestTimestamp = Math.trunc(Date.now() / 1000);
+		const providedTimestamp = Number(timestamp);
+		if (!Number.isInteger(providedTimestamp) || Math.abs(requestTimestamp - providedTimestamp) > SIGNATURE_TIMESTAMP_TOLERANCE_SECONDS) {
+			return new Response('Request timestamp is outside the allowed window', { status: 401 });
+		}
+
 		const body = await request.text();
 
 		try {
@@ -258,8 +280,9 @@ export default {
 					return new Response(`Unsupported interaction type: ${interaction.type}`, { status: 400 });
 			}
 		} catch (error) {
+			// Log the real error; return a generic body so internals aren't leaked.
 			console.error('Error processing request:', error);
-			return new Response(`Internal server error: ${error instanceof Error ? error.message : String(error)}`, { status: 500 });
+			return new Response('Internal server error', { status: 500 });
 		}
 	},
 } satisfies ExportedHandler<Env>;

@@ -30,6 +30,11 @@ enabled = true
 [ai]
 binding = "AI"
 
+# Plaintext config values. AI_MODEL overrides the default model used by the /llm command,
+# allowing you to switch models without a code change (see src/index.ts).
+[vars]
+AI_MODEL = "@cf/qwen/qwen3.8-27b"
+
 # Bind an Analytics Engine dataset. Use Analytics Engine to write analytics within your Pages Function.
 # Docs: https://developers.cloudflare.com/workers/wrangler/configuration/#analytics-engine-datasets
 # [[analytics_engine_datasets]]
